@@ -112,59 +112,236 @@ def break_combined_frequency(ciphertext, max_vig_keylen=20):
     return (f"Guessed a={a_best}, L={L_best}\n"
             f"Recovered plaintext (first 300 chars):\n{plain_guess[:300]}")
 
-# Replace known_plaintext_attack with this (demo-identical)
-def known_plaintext_attack(known_fragment, ciphertext, vkey_length):
+# def known_plaintext_attack(known_fragment, ciphertext, vkey_length, top_n=5):
+#     """
+#     Improved known-plaintext attack:
+#       - attacker does NOT know offset
+#       - tries all offsets and all a in A_COPRIME
+#       - fills unknown s slots by per-column chi-sq (same method used in demo)
+#       - ranks candidates and returns top_n candidates (human-readable)
+#     Returns a formatted string listing top candidates.
+#     """
+#     pt = clean_text(known_fragment)
+#     ct = clean_text(ciphertext)
+#     m = len(pt)
+#     if m == 0 or len(ct) < m:
+#         return "Known fragment empty or longer than ciphertext."
+
+#     prelim_candidates = []
+
+#     # 1) collect preliminary candidates (offset + a + partial s_list)
+#     for offset in range(len(ct) - m + 1):
+#         window = ct[offset: offset + m]
+#         for a in A_COPRIME:
+#             s_partial = [None] * vkey_length
+#             consistent = True
+#             for i in range(m):
+#                 x = ALPH_IDX[pt[i]]
+#                 y = ALPH_IDX[window[i]]
+#                 s_i = (y - (a * x)) % 26
+#                 pos = (offset + i) % vkey_length
+#                 if s_partial[pos] is None:
+#                     s_partial[pos] = s_i
+#                 elif s_partial[pos] != s_i:
+#                     consistent = False
+#                     break
+#             if consistent:
+#                 filled = sum(1 for v in s_partial if v is not None)
+#                 prelim_candidates.append({'offset': offset, 'a': a, 's_partial': s_partial, 'filled': filled})
+
+#     if not prelim_candidates:
+#         return "No candidates found from known fragment."
+
+#     scored_candidates = []
+
+#     # helper: score text using chi-sq (lower = more English-like)
+#     def score_plaintext(text):
+#         return chi_squared_score(text)
+
+#     # 2) for each preliminary candidate, fill unknown slots by per-column chi-sq
+#     for cand in prelim_candidates:
+#         offset = cand['offset']; a = cand['a']
+#         s_list = list(cand['s_partial'])  # copy
+#         a_inv = modinv(a, 26)
+
+#         # fill each None position using chi-sq on that column
+#         for pos in range(vkey_length):
+#             if s_list[pos] is not None:
+#                 continue
+#             # build column ciphertext for this key position: take ct[pos::vkey_length]
+#             column = ct[pos::vkey_length]
+#             best_s = None
+#             best_sc = float('inf')
+#             # try all s values 0..25
+#             for s_try in range(26):
+#                 dec_col = []
+#                 for ch in column:
+#                     y = ALPH_IDX[ch]
+#                     x = (a_inv * ((y - s_try) % 26)) % 26
+#                     dec_col.append(IDX_ALPH[x])
+#                 sc = chi_squared_score(''.join(dec_col))
+#                 if sc < best_sc:
+#                     best_sc = sc
+#                     best_s = s_try
+#             s_list[pos] = best_s
+
+#         # now we have a full s_list -> decrypt whole ciphertext
+#         dec = []
+#         for i, ch in enumerate(ct):
+#             y = ALPH_IDX[ch]
+#             s = s_list[i % vkey_length]
+#             x = (a_inv * ((y - s) % 26)) % 26
+#             dec.append(IDX_ALPH[x])
+#         plain_guess = ''.join(dec)
+#         total_score = score_plaintext(plain_guess)
+
+#         scored_candidates.append({
+#             'offset': offset,
+#             'a': a,
+#             's_list': s_list,
+#             'filled': cand['filled'],
+#             'score': total_score,
+#             'plaintext': plain_guess
+#         })
+
+#     # 3) rank candidates:
+#     # primary: more originally-filled slots (filled desc),
+#     # secondary: chi-sq score (asc)
+#     scored_candidates.sort(key=lambda c: (-c['filled'], c['score']))
+
+#     # 4) format top_n results
+#     out_lines = []
+#     n = min(top_n, len(scored_candidates))
+#     out_lines.append(f"Found {len(scored_candidates)} candidates; showing top {n}:\n")
+#     for i in range(n):
+#         c = scored_candidates[i]
+#         out_lines.append(f"Candidate #{i+1}: offset={c['offset']}, a={c['a']}, filled_slots={c['filled']}, chi2_score={c['score']:.1f}")
+#         out_lines.append(f"s_list: {c['s_list']}")
+#         out_lines.append(f"Plaintext (first 400 chars):\n{c['plaintext'][:400]}\n")
+#     return '\n'.join(out_lines)
+
+def known_plaintext_attack(known_fragment, ciphertext, vkey_length, top_n=5,
+                          max_conflicts_per_slot=2, min_support_ratio=0.5):
     """
-    Known-plaintext attack where offset is unknown.
-    Matches demo logic: try all offsets and all a in A_COPRIME.
-    Does NOT try b explicitly; computes s_i = (y - a*x) % 26 and stores
-    into s_list at (offset + i) % vkey_length.
-    Returns a human-readable result (first candidate).
+    Robust known-plaintext attack (unknown offset).
+    - Collects s_i values per vkey slot and uses the mode (most common).
+    - Allows up to `max_conflicts_per_slot` discordant s_i values per slot;
+      if conflicts exceed that, the (offset,a) candidate is rejected.
+    - min_support_ratio: when multiple s values appear, the chosen s must
+      have at least this fraction of the observations for that slot.
+    - Fills remaining None slots via chi-sq per-column (demo method).
+    - Ranks by (filled slots desc, chi2 asc) and returns top_n candidates as a formatted string.
     """
-    pt = clean_text(known_fragment)
-    ct = clean_text(ciphertext)
+    pt_raw = known_fragment
+    ct_raw = ciphertext
+
+    pt = clean_text(pt_raw)
+    ct = clean_text(ct_raw)
     m = len(pt)
-    if m == 0 or len(ct) < m:
-        return "Known fragment empty or longer than ciphertext."
+    if m == 0:
+        return "Known fragment empty after cleaning (no letters)."
+    if len(ct) < m:
+        return f"Ciphertext too short: letters={len(ct)} < known fragment letters={m}."
 
-    candidates = []
+    prelim_candidates = []
 
+    # Try all offsets and all a
     for offset in range(len(ct) - m + 1):
         window = ct[offset: offset + m]
         for a in A_COPRIME:
-            s_candidate = [None] * vkey_length
+            # collect lists of observed s values per slot
+            obs_per_slot = [[] for _ in range(vkey_length)]
             consistent = True
             for i in range(m):
                 x = ALPH_IDX[pt[i]]
                 y = ALPH_IDX[window[i]]
                 s_i = (y - (a * x)) % 26
                 pos = (offset + i) % vkey_length
-                if s_candidate[pos] is None:
-                    s_candidate[pos] = s_i
-                elif s_candidate[pos] != s_i:
+                obs_per_slot[pos].append(s_i)
+
+            # reduce obs_per_slot -> either a chosen s or None (if conflicts high)
+            s_partial = [None] * vkey_length
+            filled = 0
+            for pos, obs in enumerate(obs_per_slot):
+                if not obs:
+                    continue
+                # count occurrences
+                counts = {}
+                for v in obs:
+                    counts[v] = counts.get(v, 0) + 1
+                # mode and its count
+                mode_val, mode_count = max(counts.items(), key=lambda kv: kv[1])
+                conflicts = len(obs) - mode_count
+                # require mode to have at least min_support_ratio fraction of obs
+                if conflicts > max_conflicts_per_slot or (mode_count / len(obs)) < min_support_ratio:
+                    # reject this (offset,a)
                     consistent = False
                     break
+                else:
+                    s_partial[pos] = mode_val
+                    filled += 1
             if consistent:
-                candidates.append({'offset': offset, 'a': a, 's_list': s_candidate})
+                prelim_candidates.append({'offset': offset, 'a': a, 's_partial': s_partial, 'filled': filled})
 
-    if not candidates:
-        return "No candidates found."
+    if not prelim_candidates:
+        return ("No consistent candidates found from known fragment under the current tolerance.\n"
+                "Try increasing max_conflicts_per_slot or lowering min_support_ratio, or ensure the known fragment\n"
+                "matches the letters-only plaintext (use clean_text on both).")
 
-    # choose first candidate (same as demo); you can later rank if desired
-    cand = candidates[0]
-    a_k = cand['a']
-    s_list_k = cand['s_list']
-    offset_k = cand['offset']
-    a_inv = modinv(a_k, 26)
+    # For each preliminary candidate, fill missing slots by per-column chi-sq (demo style)
+    scored_candidates = []
 
-    dec = []
-    for i, ch in enumerate(ct):
-        s = s_list_k[i % vkey_length]
-        s_val = 0 if s is None else s   # demo used 0 fallback for unknown slots
-        y = ALPH_IDX[ch]
-        x = (a_inv * ((y - s_val) % 26)) % 26
-        dec.append(IDX_ALPH[x])
+    def score_plaintext(text):
+        return chi_squared_score(text)
 
-    plain_guess = ''.join(dec)
-    return (f"Recovered a={a_k}, guessed offset={offset_k}\n"
-            f"Partial decryption (first 300 chars):\n{plain_guess[:300]}")
+    for cand in prelim_candidates:
+        offset = cand['offset']; a = cand['a']
+        s_list = list(cand['s_partial'])
+        a_inv = modinv(a, 26)
+
+        # fill None slots via per-column chi-sq
+        for pos in range(vkey_length):
+            if s_list[pos] is not None:
+                continue
+            column = ct[pos::vkey_length]
+            best_s = None; best_sc = float('inf')
+            for s_try in range(26):
+                dec_col = []
+                for ch in column:
+                    y = ALPH_IDX[ch]
+                    x = (a_inv * ((y - s_try) % 26)) % 26
+                    dec_col.append(IDX_ALPH[x])
+                sc = chi_squared_score(''.join(dec_col))
+                if sc < best_sc:
+                    best_sc = sc; best_s = s_try
+            s_list[pos] = best_s
+
+        # decrypt full ciphertext
+        dec = []
+        for i, ch in enumerate(ct):
+            y = ALPH_IDX[ch]
+            s = s_list[i % vkey_length]
+            x = (a_inv * ((y - s) % 26)) % 26
+            dec.append(IDX_ALPH[x])
+        plain_guess = ''.join(dec)
+        total_score = score_plaintext(plain_guess)
+        scored_candidates.append({
+            'offset': offset, 'a': a, 's_list': s_list, 'filled': cand['filled'],
+            'score': total_score, 'plaintext': plain_guess
+        })
+
+    # rank candidates: more originally-filled slots first, then chi2
+    scored_candidates.sort(key=lambda c: (-c['filled'], c['score']))
+
+    # format top_n
+    n = min(top_n, len(scored_candidates))
+    out_lines = []
+    out_lines.append(f"Known fragment (cleaned): {pt}\nCiphertext letters: {len(ct)}\n"
+                     f"Found {len(scored_candidates)} candidates; showing top {n}:\n")
+    for i in range(n):
+        c = scored_candidates[i]
+        out_lines.append(f"Candidate #{i+1}: offset={c['offset']}, a={c['a']}, filled_slots={c['filled']}, chi2_score={c['score']:.1f}")
+        out_lines.append(f"s_list: {c['s_list']}")
+        out_lines.append(f"Plaintext (first 400 chars):\n{c['plaintext'][:400]}\n")
+    return '\n'.join(out_lines)
+

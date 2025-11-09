@@ -32,10 +32,18 @@ class MainApp(tk.Tk):
         self.input_text = tk.Text(top, height=12, wrap=tk.WORD)
         self.input_text.pack(fill=tk.X)
 
+        
+         # Label to show character count
+        self.char_count_var = tk.StringVar(value="Chars (no spaces): 0")
+        ttk.Label(top, textvariable=self.char_count_var).pack(anchor=tk.W, pady=(2,0))
+
+        # Bind the input text to update char count
+        self.input_text.bind("<KeyRelease>", self.update_char_count)
+
         key_row = ttk.Frame(top)
         key_row.pack(fill=tk.X, pady=(6,0))
         ttk.Label(key_row, text="Vigenere key (min 1 char):").pack(side=tk.LEFT)
-        self.vkey_var = tk.StringVar(value="THISISASAMPLEKEY")
+        self.vkey_var = tk.StringVar(value="XALRQAHNTNWP")
         ttk.Entry(key_row, textvariable=self.vkey_var, width=36).pack(side=tk.LEFT, padx=6)
 
         ttk.Label(key_row, text="Affine a:").pack(side=tk.LEFT, padx=(10,0))
@@ -89,6 +97,12 @@ class MainApp(tk.Tk):
         ttk.Label(atk_frame, text="Attack Output:").pack(anchor=tk.W, pady=(8,0))
         self.atk_output = tk.Text(atk_frame, height=14, wrap=tk.WORD)
         self.atk_output.pack(fill=tk.BOTH, expand=True)
+
+
+    def update_char_count(self, event=None):
+        text = self.input_text.get("1.0", tk.END)
+        count = len([c for c in text if not c.isspace()])  # Exclude all whitespace
+        self.char_count_var.set(f"Chars (no spaces): {count}")
 
     # ---- Tab 1 handlers ----
     def validate_vkey(self, key):
@@ -191,16 +205,29 @@ class MainApp(tk.Tk):
         self.atk_output.insert(tk.END, res)
 
     def run_known_plain(self):
-        cipher = self.atk_cipher_text.get(1.0, tk.END).strip()
-        known = self.known_plain_entry.get().strip()
-        if not cipher or not known:
+        cipher_raw = self.atk_cipher_text.get(1.0, tk.END).strip()
+        known_raw = self.known_plain_entry.get().strip()
+        if not cipher_raw or not known_raw:
             messagebox.showinfo("Input required", "Provide both ciphertext and known plaintext fragment.")
             return
+
+        # Normalize both exactly as attack expects
+        known_clean = clean_text(known_raw)
+        ct_letters_only = clean_text(cipher_raw)
+
+        # Basic diagnostics
         self.atk_output.delete(1.0, tk.END)
-        self.atk_output.insert(tk.END, "Running known-plaintext attack (unknown offset)...\n")
+        self.atk_output.insert(tk.END, f"Known (raw): {known_raw}\nKnown (cleaned): {known_clean}\nCiphertext letters: {len(ct_letters_only)}\n\n")
+        if not known_clean:
+            self.atk_output.insert(tk.END, "Known fragment contains no letters after cleaning. Aborting.\n")
+            return
+
+        # Run improved known-plaintext attack (shows top candidates)
+        self.atk_output.insert(tk.END, "Running known-plaintext attack (filling unknown s slots by chi-sq)...\n")
         self.update_idletasks()
-        res = attack_tools.known_plaintext_attack(known, cipher, vkey_length=10)
+        res = attack_tools.known_plaintext_attack(known_clean, cipher_raw, vkey_length=10, top_n=5)
         self.atk_output.insert(tk.END, res)
+
 
     def run_demo(self):
         # run the demo logic: random key and random known fragment offset
