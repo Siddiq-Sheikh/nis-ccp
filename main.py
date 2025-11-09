@@ -205,29 +205,16 @@ class MainApp(tk.Tk):
         self.atk_output.insert(tk.END, res)
 
     def run_known_plain(self):
-        cipher_raw = self.atk_cipher_text.get(1.0, tk.END).strip()
-        known_raw = self.known_plain_entry.get().strip()
-        if not cipher_raw or not known_raw:
+        cipher = self.atk_cipher_text.get(1.0, tk.END).strip()
+        known = self.known_plain_entry.get().strip()
+        if not cipher or not known:
             messagebox.showinfo("Input required", "Provide both ciphertext and known plaintext fragment.")
             return
-
-        # Normalize both exactly as attack expects
-        known_clean = clean_text(known_raw)
-        ct_letters_only = clean_text(cipher_raw)
-
-        # Basic diagnostics
         self.atk_output.delete(1.0, tk.END)
-        self.atk_output.insert(tk.END, f"Known (raw): {known_raw}\nKnown (cleaned): {known_clean}\nCiphertext letters: {len(ct_letters_only)}\n\n")
-        if not known_clean:
-            self.atk_output.insert(tk.END, "Known fragment contains no letters after cleaning. Aborting.\n")
-            return
-
-        # Run improved known-plaintext attack (shows top candidates)
-        self.atk_output.insert(tk.END, "Running known-plaintext attack (filling unknown s slots by chi-sq)...\n")
+        self.atk_output.insert(tk.END, "Running known-plaintext attack (unknown offset)...\n")
         self.update_idletasks()
-        res = attack_tools.known_plaintext_attack(known_clean, cipher_raw, vkey_length=10, top_n=5)
+        res = attack_tools.known_plaintext_attack(known, cipher)
         self.atk_output.insert(tk.END, res)
-
 
     def run_demo(self):
         # run the demo logic: random key and random known fragment offset
