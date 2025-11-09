@@ -1,96 +1,71 @@
-ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+# cipher_core.py
+import string
+import math
 
-def clean_text(s, keep_nonletters=False):
-    if keep_nonletters:
-        return s.upper()
-    else:
-        return ''.join(ch.upper() for ch in s if ch.isalpha())
+ALPH = string.ascii_uppercase
+ALPH_IDX = {c:i for i,c in enumerate(ALPH)}
+IDX_ALPH = {i:c for i,c in enumerate(ALPH)}
 
-# --- Vigenere Cipher ---
-def vigenere_encrypt(plaintext, key):
-    ciphertext = []
-    key_letters = ''.join([k for k in key.upper() if k.isalpha()])
-    if len(key_letters) == 0:
-        raise ValueError('Vigenere key must contain letters')
-    ki = 0
-    for ch in plaintext:
-        if ch.isalpha():
-            p = ALPHABET.index(ch.upper())
-            k = ALPHABET.index(key_letters[ki % len(key_letters)])
-            c = ALPHABET[(p + k) % 26]
-            ciphertext.append(c)
-            ki += 1
-        else:
-            ciphertext.append(ch)
-    return ''.join(ciphertext)
+def clean_text(s):
+    return ''.join([c for c in s.upper() if c in ALPH])
 
-def vigenere_decrypt(ciphertext, key):
-    plaintext = []
-    key_letters = ''.join([k for k in key.upper() if k.isalpha()])
-    if len(key_letters) == 0:
-        raise ValueError('Vigenere key must contain letters')
-    ki = 0
-    for ch in ciphertext:
-        if ch.isalpha():
-            c = ALPHABET.index(ch.upper())
-            k = ALPHABET.index(key_letters[ki % len(key_letters)])
-            p = (c - k) % 26
-            plaintext.append(ALPHABET[p])
-            ki += 1
-        else:
-            plaintext.append(ch)
-    return ''.join(plaintext)
-
-# --- Affine Cipher ---
-def mod_inverse(a, m=26):
-    a = a % m
-    for x in range(1, m):
-        if (a * x) % m == 1:
+def modinv(a, m=26):
+    for x in range(1,m):
+        if (a*x) % m == 1:
             return x
     return None
 
-def affine_encrypt(plaintext, a, b):
-    ciphertext = []
-    for ch in plaintext:
-        if ch.isalpha():
-            p = ALPHABET.index(ch.upper())
-            c = (a * p + b) % 26
-            ciphertext.append(ALPHABET[c])
-        else:
-            ciphertext.append(ch)
-    return ''.join(ciphertext)
+def affine_encrypt_idx(x,a,b):
+    return (a*x + b) % 26
+def affine_decrypt_idx(y,a,b):
+    a_inv = modinv(a,26)
+    return (a_inv * (y - b)) % 26
 
-def affine_decrypt(ciphertext, a, b):
-    plaintext = []
-    a_inv = mod_inverse(a, 26)
-    if a_inv is None:
-        raise ValueError('a has no modular inverse mod 26')
-    for ch in ciphertext:
-        if ch.isalpha():
-            c = ALPHABET.index(ch.upper())
-            p = (a_inv * (c - b)) % 26
-            plaintext.append(ALPHABET[p])
-        else:
-            plaintext.append(ch)
-    return ''.join(plaintext)
+def vigenere_shift_idx(x,k):
+    return (x + k) % 26
+def vigenere_unshift_idx(y,k):
+    return (y - k) % 26
 
-# --- Derive affine params from key (deterministic for encryption/decryption) ---
-def derive_affine_params_from_key(key):
-    # choose a fixed a that is coprime with 26 (5 is fine) and b derived from key
-    a = 5
-    b = sum(ord(c) for c in key) % 26
-    return a, b
+def combined_encrypt(plaintext, a, b, vkey, keep_nonletters=False):
+    """
+    plaintext: raw text
+    a,b: affine keys (integers)
+    vkey: Vigenere key string (uppercase A-Z)
+    keep_nonletters: if True, non-letters are preserved (indexing includes them)
+    """
+    if not keep_nonletters:
+        pt = clean_text(plaintext)
+    else:
+        pt = plaintext.upper()
 
-# --- Combined Cipher (Vigenere followed by Affine) ---
-def combined_encrypt(plaintext, key, keep_nonletters=False):
-    text = clean_text(plaintext, keep_nonletters)
-    stage1 = vigenere_encrypt(text, key)
-    a, b = derive_affine_params_from_key(key)
-    stage2 = affine_encrypt(stage1, a, b)
-    return stage2
+    ct = []
+    L = len(vkey)
+    for i,ch in enumerate(pt):
+        if ch not in ALPH:
+            ct.append(ch)
+            continue
+        x = ALPH_IDX[ch]
+        c1 = affine_encrypt_idx(x,a,b)
+        k = ALPH_IDX[vkey[i % L]]
+        y = vigenere_shift_idx(c1,k)
+        ct.append(IDX_ALPH[y])
+    return ''.join(ct)
 
-def combined_decrypt(ciphertext, key, keep_nonletters=False):
-    a, b = derive_affine_params_from_key(key)
-    stage1 = affine_decrypt(ciphertext, a, b)
-    stage2 = vigenere_decrypt(stage1, key)
-    return stage2
+def combined_decrypt(ciphertext, a, b, vkey, keep_nonletters=False):
+    if not keep_nonletters:
+        ct = clean_text(ciphertext)
+    else:
+        ct = ciphertext.upper()
+    pt = []
+    L = len(vkey)
+    a_inv = modinv(a,26)
+    for i,ch in enumerate(ct):
+        if ch not in ALPH:
+            pt.append(ch)
+            continue
+        y = ALPH_IDX[ch]
+        k = ALPH_IDX[vkey[i % L]]
+        c1 = vigenere_unshift_idx(y,k)
+        x = affine_decrypt_idx(c1,a,b)
+        pt.append(IDX_ALPH[x])
+    return ''.join(pt)

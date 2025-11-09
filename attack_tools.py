@@ -1,161 +1,170 @@
-from collections import Counter
+# attack_tools.py
 import math
-from cipher_core import affine_decrypt, vigenere_decrypt, ALPHABET, derive_affine_params_from_key, vigenere_encrypt
+import random
+from collections import Counter
+from cipher_core import ALPH, ALPH_IDX, IDX_ALPH, clean_text, modinv
 
-ENGLISH_FREQ = {
-    'A': 8.167, 'B': 1.492, 'C': 2.782, 'D': 4.253, 'E': 12.702, 'F': 2.228,
-    'G': 2.015, 'H': 6.094, 'I': 6.966, 'J': 0.153, 'K': 0.772, 'L': 4.025,
-    'M': 2.406, 'N': 6.749, 'O': 7.507, 'P': 1.929, 'Q': 0.095, 'R': 5.987,
-    'S': 6.327, 'T': 9.056, 'U': 2.758, 'V': 0.978, 'W': 2.360, 'X': 0.150,
-    'Y': 1.974, 'Z': 0.074
+# English frequencies for chi-squared
+EN_FREQ = {
+ 'A':8.167,'B':1.492,'C':2.782,'D':4.253,'E':12.702,'F':2.228,'G':2.015,'H':6.094,
+ 'I':6.966,'J':0.153,'K':0.772,'L':4.025,'M':2.406,'N':6.749,'O':7.507,'P':1.929,
+ 'Q':0.095,'R':5.987,'S':6.327,'T':9.056,'U':2.758,'V':0.978,'W':2.360,'X':0.150,
+ 'Y':1.974,'Z':0.074
 }
 
-def frequency_analysis(ciphertext):
-    """
-    Return formatted frequency analysis string (percentages) for A-Z from ciphertext.
-    """
-    filtered = ''.join(ch for ch in ciphertext.upper() if ch.isalpha())
-    if not filtered:
-        return "No alphabetic characters in ciphertext."
-    freq = Counter(filtered)
-    total = sum(freq.values())
-    lines = ["Letter : Count (Percent)"]
-    for ch, count in freq.most_common():
-        lines.append(f"{ch:>2} : {count:>4} ({count/total*100:6.2f}%)")
-    # Add chi-squared against English
-    chi2 = 0.0
-    for ch in ALPHABET:
-        observed = freq.get(ch, 0)
-        expected = ENGLISH_FREQ[ch] * total / 100.0
-        chi2 += ((observed - expected) ** 2) / (expected + 1e-9)
-    lines.append("")
-    lines.append(f"Chi-squared statistic (vs English): {chi2:.2f} (lower suggests English-like)")
-    return "\n".join(lines)
+A_COPRIME = [a for a in range(1,26) if math.gcd(a,26)==1]
 
-def known_plaintext_attack(ciphertext, known_plain, allow_overlap=True):
-    """
-    Known-plaintext attack attempt:
-    - Search occurrences of known_plain (letters only) in ciphertext (letters only),
-      then for each candidate location brute-force affine params (a,b) and derive a
-      Vigenere key fragment from the mapping.
-    - Then try to decrypt full ciphertext with the derived key fragment (repeating).
-    Returns a formatted multi-line string with candidate successes.
-    """
-    c_filtered = ''.join(ch for ch in ciphertext.upper() if ch.isalpha())
-    p_filtered = ''.join(ch for ch in known_plain.upper() if ch.isalpha())
-    if not c_filtered or not p_filtered:
-        return "Need alphabetic characters for both ciphertext and known plaintext."
-    results = []
-    # find all positions where we can align known_plain within ciphertext
-    positions = []
-    # naive substring search
-    start = 0
-    while True:
-        idx = c_filtered.find(p_filtered, start)
-        if idx == -1:
-            break
-        positions.append(idx)
-        start = idx + 1 if allow_overlap else idx + len(p_filtered)
-    if not positions:
-        # It may be that known_plain is plaintext mapping to ciphertext via affine+vigenere
-        # so direct substring match may not occur. We'll still try sliding windows of same length.
-        positions = list(range(0, max(1, len(c_filtered) - len(p_filtered) + 1)))
-    # coprime 'a' candidates
-    coprime_as = [a for a in range(1, 26) if math.gcd(a, 26) == 1]
-    for pos in positions:
-        c_segment = c_filtered[pos:pos+len(p_filtered)]
-        for a in coprime_as:
-            for b in range(26):
-                try:
-                    # remove affine: this yields the Vigenere stage output for segment
-                    v_segment = affine_decrypt(c_segment, a, b)
-                except Exception:
-                    continue
-                # derive per-letter key shifts: key_shift = (v_segment_letter - plaintext_letter) mod26
-                key_shifts = []
-                for vc, pc in zip(v_segment, p_filtered):
-                    kshift = (ALPHABET.index(vc) - ALPHABET.index(pc)) % 26
-                    key_shifts.append(ALPHABET[kshift])
-                # candidate key fragment
-                key_fragment = ''.join(key_shifts)
-                # try decrypting full ciphertext using this key fragment as repeating key
-                candidate_plain = vigenere_decrypt( affine_decrypt(c_filtered, a, b), key_fragment )
-                if p_filtered in candidate_plain:
-                    # Format candidate
-                    b64 = f"pos={pos}, a={a}, b={b}, key_fragment='{key_fragment}'"
-                    results.append((b64, candidate_plain))
-    if not results:
-        return "No successful candidates found with the provided known-plaintext."
-    # Format top results (deduplicate first)
-    out_lines = ["Found candidate(s):", "-"*60]
-    seen = set()
-    for meta, plaintext in results:
-        if meta in seen: 
-            continue
-        seen.add(meta)
-        out_lines.append(meta)
-        # show a short snippet of plaintext
-        preview = plaintext[:200]
-        out_lines.append("Decrypted snippet:")
-        out_lines.append(preview)
-        out_lines.append("-"*60)
-    return "\n".join(out_lines)
+def index_of_coincidence(text):
+    n = len(text)
+    if n <= 1: return 0.0
+    freqs = Counter(text)
+    return sum(v*(v-1) for v in freqs.values()) / (n*(n-1))
 
-# Frequency-based combined breaker (brute-force affine then vigenere-find via chi-sq)
-def break_combined_frequency(ciphertext, max_vig_keylen=12, top_candidates=3):
-    """
-    Try all affine (a,b). For each, run a simple Vigenere break by per-position chi-square.
-    Return a formatted string of top candidate plaintexts/keys.
-    """
-    filtered = ''.join(ch for ch in ciphertext.upper() if ch.isalpha())
-    if not filtered:
-        return "No alphabetic characters in ciphertext."
+def guess_key_length_ic(ciphertext, max_len=20):
+    ct = clean_text(ciphertext)
+    best_L=1; best_score=0.0; results=[]
+    for L in range(1, max_len+1):
+        ics=[]
+        for i in range(L):
+            sub = ct[i::L]
+            ics.append(index_of_coincidence(sub))
+        avg_ic = sum(ics)/len(ics)
+        results.append((L,avg_ic))
+        if avg_ic > best_score:
+            best_score=avg_ic; best_L=L
+    return best_L, results
 
-    # helper to compute chi-sq for assumed keylength and shift
-    def score_shifts_for_keylen(text, keylen):
-        key_chars = []
-        for i in range(keylen):
-            seq = text[i::keylen]
-            best_shift = 0
-            best_score = float('inf')
-            for shift in range(26):
-                shifted = ''.join(ALPHABET[(ALPHABET.index(c) - shift) % 26] for c in seq)
-                # compute simple chi2
-                cnt = Counter(shifted)
-                total = len(shifted)
-                chi2 = 0.0
-                for ch in ALPHABET:
-                    observed = cnt.get(ch, 0)
-                    expected = ENGLISH_FREQ[ch] * total / 100.0
-                    chi2 += ((observed - expected)**2) / (expected + 1e-9)
-                if chi2 < best_score:
-                    best_score = chi2
-                    best_shift = shift
-            key_chars.append(ALPHABET[best_shift])
-        return ''.join(key_chars), best_score
+def chi_squared_score(text):
+    n = len(text)
+    if n == 0: return float('inf')
+    obs = Counter(text)
+    score = 0.0
+    for ch in ALPH:
+        expected = EN_FREQ[ch] * n / 100.0
+        o = obs.get(ch,0)
+        score += (o - expected)**2 / (expected + 1e-9)
+    return score
+
+# Replace break_combined_frequency with this (demo-identical)
+def break_combined_frequency(ciphertext, max_vig_keylen=20):
+    """
+    Match demo attack_via_ic_and_freq exactly:
+    - use guess_key_length_ic to get IC results
+    - take top 3 candidate lengths
+    - for each L and each a in A_COPRIME, find best s_list per column by chi-sq
+    - DO NOT brute-force b; s represents (b + k_i) as in the demo
+    """
+    ct = clean_text(ciphertext)
+    if not ct:
+        return "No ciphertext (letters) to attack."
+
+    # get IC-based candidates
+    guessed_L, ic_results = guess_key_length_ic(ct, max_len=max_vig_keylen)
+    # take top 3 candidate lengths (or fewer if not available)
+    sorted_by_ic = sorted(ic_results, key=lambda x: x[1], reverse=True)
+    candidate_lengths = [l for l,_ in sorted_by_ic[:3]]
+
+    best_overall = None
+    best_score = float('inf')
+
+    for L in candidate_lengths:
+        for a in A_COPRIME:
+            a_inv = modinv(a, 26)
+            total_score = 0.0
+            s_list = []
+            for j in range(L):
+                sub = ct[j::L]
+                best_s = None
+                best_s_score = float('inf')
+                for s in range(26):
+                    # decrypt column with candidate (a,s); s == b + k_i (demo semantics)
+                    dec = []
+                    for ch in sub:
+                        y = ALPH_IDX[ch]
+                        x = (a_inv * ((y - s) % 26)) % 26
+                        dec.append(IDX_ALPH[x])
+                    sc = chi_squared_score(''.join(dec))
+                    if sc < best_s_score:
+                        best_s_score = sc
+                        best_s = s
+                s_list.append(best_s)
+                total_score += best_s_score
+            if total_score < best_score:
+                best_score = total_score
+                best_overall = {'a': a, 'L': L, 's_list': s_list, 'score': total_score}
+
+    if best_overall is None:
+        return "Attack failed."
+
+    a_best = best_overall['a']
+    L_best = best_overall['L']
+    s_best = best_overall['s_list']
+    a_inv = modinv(a_best, 26)
+
+    dec = []
+    for i, ch in enumerate(ct):
+        y = ALPH_IDX[ch]
+        s = s_best[i % L_best]
+        x = (a_inv * ((y - s) % 26)) % 26
+        dec.append(IDX_ALPH[x])
+    plain_guess = ''.join(dec)
+
+    return (f"Guessed a={a_best}, L={L_best}\n"
+            f"Recovered plaintext (first 300 chars):\n{plain_guess[:300]}")
+
+# Replace known_plaintext_attack with this (demo-identical)
+def known_plaintext_attack(known_fragment, ciphertext, vkey_length):
+    """
+    Known-plaintext attack where offset is unknown.
+    Matches demo logic: try all offsets and all a in A_COPRIME.
+    Does NOT try b explicitly; computes s_i = (y - a*x) % 26 and stores
+    into s_list at (offset + i) % vkey_length.
+    Returns a human-readable result (first candidate).
+    """
+    pt = clean_text(known_fragment)
+    ct = clean_text(ciphertext)
+    m = len(pt)
+    if m == 0 or len(ct) < m:
+        return "Known fragment empty or longer than ciphertext."
 
     candidates = []
-    coprime_as = [a for a in range(1, 26) if math.gcd(a, 26) == 1]
-    for a in coprime_as:
-        for b in range(26):
-            try:
-                after_affine = affine_decrypt(filtered, a, b)
-            except Exception:
-                continue
-            # try different vigenere key lengths
-            for klen in range(1, max_vig_keylen+1):
-                key_guess, score = score_shifts_for_keylen(after_affine, klen)
-                # decrypt with guessed key
-                plain_guess = vigenere_decrypt(after_affine, key_guess)
-                candidates.append( (score, a, b, key_guess, plain_guess) )
-    # select top candidates by score
-    candidates.sort(key=lambda x: x[0])
+
+    for offset in range(len(ct) - m + 1):
+        window = ct[offset: offset + m]
+        for a in A_COPRIME:
+            s_candidate = [None] * vkey_length
+            consistent = True
+            for i in range(m):
+                x = ALPH_IDX[pt[i]]
+                y = ALPH_IDX[window[i]]
+                s_i = (y - (a * x)) % 26
+                pos = (offset + i) % vkey_length
+                if s_candidate[pos] is None:
+                    s_candidate[pos] = s_i
+                elif s_candidate[pos] != s_i:
+                    consistent = False
+                    break
+            if consistent:
+                candidates.append({'offset': offset, 'a': a, 's_list': s_candidate})
+
     if not candidates:
         return "No candidates found."
-    out_lines = ["Top candidate decryptions (lower score = closer to English):", "-"*80]
-    for score, a, b, kguess, plain in candidates[:top_candidates]:
-        out_lines.append(f"a={a}, b={b}, vigenere_key_guess='{kguess}', score={score:.2f}")
-        out_lines.append("Plaintext preview:")
-        out_lines.append(plain[:300])
-        out_lines.append("-"*80)
-    return "\n".join(out_lines)
+
+    # choose first candidate (same as demo); you can later rank if desired
+    cand = candidates[0]
+    a_k = cand['a']
+    s_list_k = cand['s_list']
+    offset_k = cand['offset']
+    a_inv = modinv(a_k, 26)
+
+    dec = []
+    for i, ch in enumerate(ct):
+        s = s_list_k[i % vkey_length]
+        s_val = 0 if s is None else s   # demo used 0 fallback for unknown slots
+        y = ALPH_IDX[ch]
+        x = (a_inv * ((y - s_val) % 26)) % 26
+        dec.append(IDX_ALPH[x])
+
+    plain_guess = ''.join(dec)
+    return (f"Recovered a={a_k}, guessed offset={offset_k}\n"
+            f"Partial decryption (first 300 chars):\n{plain_guess[:300]}")

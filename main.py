@@ -1,15 +1,20 @@
+# gui_app.py
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from cipher_core import combined_encrypt, combined_decrypt
+from cipher_core import combined_encrypt, combined_decrypt, clean_text, ALPH, modinv
 import attack_tools
-import efficiency_analysis
-import os
+import random
+
+SAMPLE = ("THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG MANY TIMES AS IT RUNS ACROSS THE FIELD "
+"AND THROUGH THE HEDGEROW THE FARMER WATCHES FROM HIS GATE AND SHAKES HIS HEAD AT THE PLAYFUL "
+"SCENE THE CHILDREN CLAP AND LAUGH WHILE BIRDS CALL FROM THE TREES THE SKY IS CLEAR AND THE "
+"AIR SMELLS OF CUT GRASS AND WARM EARTH")
 
 class MainApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Combined Cipher Tool — Vigenere + Affine")
-        self.geometry("1000x720")
+        self.title("Combined Cipher Tool — Vigenere + Affine (Demo-alike)")
+        self.geometry("1050x760")
         self.create_widgets()
 
     def create_widgets(self):
@@ -29,9 +34,18 @@ class MainApp(tk.Tk):
 
         key_row = ttk.Frame(top)
         key_row.pack(fill=tk.X, pady=(6,0))
-        ttk.Label(key_row, text="Key (min 10 chars):").pack(side=tk.LEFT)
-        self.key_var = tk.StringVar(value="THISISASAMPLEKEY")
-        ttk.Entry(key_row, textvariable=self.key_var, width=40).pack(side=tk.LEFT, padx=6)
+        ttk.Label(key_row, text="Vigenere key (min 1 char):").pack(side=tk.LEFT)
+        self.vkey_var = tk.StringVar(value="THISISASAMPLEKEY")
+        ttk.Entry(key_row, textvariable=self.vkey_var, width=36).pack(side=tk.LEFT, padx=6)
+
+        ttk.Label(key_row, text="Affine a:").pack(side=tk.LEFT, padx=(10,0))
+        self.a_var = tk.StringVar(value="5")
+        ttk.Entry(key_row, textvariable=self.a_var, width=4).pack(side=tk.LEFT, padx=4)
+
+        ttk.Label(key_row, text="Affine b:").pack(side=tk.LEFT, padx=(6,0))
+        self.b_var = tk.StringVar(value="8")
+        ttk.Entry(key_row, textvariable=self.b_var, width=4).pack(side=tk.LEFT, padx=4)
+
         self.keep_nonletters = tk.BooleanVar(value=False)
         ttk.Checkbutton(key_row, text="Keep non-letters", variable=self.keep_nonletters).pack(side=tk.LEFT, padx=8)
 
@@ -47,22 +61,21 @@ class MainApp(tk.Tk):
         self.result_text = tk.Text(top, height=12, wrap=tk.WORD)
         self.result_text.pack(fill=tk.BOTH, expand=True)
 
-        # --- Tab 2: Attack tools ---
+        # --- Tab 2: Attack / Demo ---
         tab2 = ttk.Frame(nb)
-        nb.add(tab2, text="Attack / Analysis")
+        nb.add(tab2, text="Attack / Demo")
 
         atk_frame = ttk.Frame(tab2, padding=6)
         atk_frame.pack(fill=tk.BOTH, expand=True)
 
-        ttk.Label(atk_frame, text="Ciphertext for analysis:").pack(anchor=tk.W)
-        self.atk_cipher_text = tk.Text(atk_frame, height=8, wrap=tk.WORD)
+        ttk.Label(atk_frame, text="Ciphertext for analysis (paste here):").pack(anchor=tk.W)
+        self.atk_cipher_text = tk.Text(atk_frame, height=7, wrap=tk.WORD)
         self.atk_cipher_text.pack(fill=tk.X)
 
         atk_opts = ttk.Frame(atk_frame)
         atk_opts.pack(fill=tk.X, pady=6)
-        ttk.Button(atk_opts, text="Frequency Analysis", command=self.run_freq_analysis).pack(side=tk.LEFT, padx=6)
-        ttk.Button(atk_opts, text="Known-Plaintext Attack", command=self.run_known_plain).pack(side=tk.LEFT, padx=6)
-        ttk.Button(atk_opts, text="Break by Frequency (affine+vig)", command=self.run_break_combined).pack(side=tk.LEFT, padx=6)
+        ttk.Button(atk_opts, text="Break by Frequency (demo method)", command=self.run_break_combined).pack(side=tk.LEFT, padx=6)
+        ttk.Button(atk_opts, text="Run Demo (random keys)", command=self.run_demo).pack(side=tk.LEFT, padx=6)
 
         # Known plaintext inputs
         kp_frame = ttk.Frame(atk_frame)
@@ -71,43 +84,48 @@ class MainApp(tk.Tk):
         self.known_plain_entry = ttk.Entry(kp_frame, width=60)
         self.known_plain_entry.pack(anchor=tk.W, pady=(2,0))
 
+        ttk.Button(kp_frame, text="Known-Plaintext Attack (demo method)", command=self.run_known_plain).pack(anchor=tk.W, pady=6)
+
         ttk.Label(atk_frame, text="Attack Output:").pack(anchor=tk.W, pady=(8,0))
-        self.atk_output = tk.Text(atk_frame, height=12, wrap=tk.WORD)
+        self.atk_output = tk.Text(atk_frame, height=14, wrap=tk.WORD)
         self.atk_output.pack(fill=tk.BOTH, expand=True)
 
-        # --- Tab 3: Efficiency tests ---
-        tab3 = ttk.Frame(nb)
-        nb.add(tab3, text="Efficiency")
-
-        eff_frame = ttk.Frame(tab3, padding=6)
-        eff_frame.pack(fill=tk.BOTH, expand=True)
-
-        ttk.Label(eff_frame, text="Performance tests compare Combined vs Vigenere alone.").pack(anchor=tk.W)
-        eff_opts = ttk.Frame(eff_frame)
-        eff_opts.pack(fill=tk.X, pady=6)
-
-        ttk.Label(eff_opts, text="Key for tests:").pack(side=tk.LEFT)
-        self.eff_key_var = tk.StringVar(value="THISISASAMPLEKEY")
-        ttk.Entry(eff_opts, textvariable=self.eff_key_var, width=40).pack(side=tk.LEFT, padx=6)
-        ttk.Button(eff_opts, text="Run Efficiency Tests", command=self.run_eff_tests).pack(side=tk.LEFT, padx=8)
-
-        ttk.Label(eff_frame, text="Efficiency Output:").pack(anchor=tk.W, pady=(8,0))
-        self.eff_output = tk.Text(eff_frame, height=18, wrap=tk.WORD)
-        self.eff_output.pack(fill=tk.BOTH, expand=True)
-
     # ---- Tab 1 handlers ----
-    def validate_key(self, key):
-        if len(key) < 10:
-            messagebox.showerror("Key Error", "Key must be at least 10 characters long.")
+    def validate_vkey(self, key):
+        if len(key) < 1:
+            messagebox.showerror("Key Error", "Vigenere key must be at least 1 character long.")
+            return False
+        # ensure uppercase A-Z
+        if any(ch not in ALPH for ch in key.upper()):
+            messagebox.showerror("Key Error", "Vigenere key must contain only letters A-Z.")
             return False
         return True
 
+    def validate_affine(self, a_str, b_str):
+        try:
+            a = int(a_str); b = int(b_str)
+        except:
+            messagebox.showerror("Affine error", "Affine a and b must be integers.")
+            return None
+        if math.gcd(a,26) != 1:
+            messagebox.showerror("Affine error", f"Affine a={a} is not coprime with 26.")
+            return None
+        return a, b
+
     def on_encrypt(self):
         text = self.input_text.get(1.0, tk.END).rstrip('\n')
-        key = self.key_var.get()
-        if not self.validate_key(key): return
+        vkey = self.vkey_var.get().upper()
+        if not self.validate_vkey(vkey): return
         try:
-            res = combined_encrypt(text, key, self.keep_nonletters.get())
+            a = int(self.a_var.get()); b = int(self.b_var.get())
+        except:
+            messagebox.showerror("Input error", "Affine a and b must be integers.")
+            return
+        if math.gcd(a,26) != 1:
+            messagebox.showerror("Affine error", f"Affine a={a} is not coprime with 26.")
+            return
+        try:
+            res = combined_encrypt(text, a, b, vkey, keep_nonletters=self.keep_nonletters.get())
         except Exception as e:
             messagebox.showerror("Encryption Error", str(e))
             return
@@ -116,10 +134,18 @@ class MainApp(tk.Tk):
 
     def on_decrypt(self):
         text = self.input_text.get(1.0, tk.END).rstrip('\n')
-        key = self.key_var.get()
-        if not self.validate_key(key): return
+        vkey = self.vkey_var.get().upper()
+        if not self.validate_vkey(vkey): return
         try:
-            res = combined_decrypt(text, key, self.keep_nonletters.get())
+            a = int(self.a_var.get()); b = int(self.b_var.get())
+        except:
+            messagebox.showerror("Input error", "Affine a and b must be integers.")
+            return
+        if math.gcd(a,26) != 1:
+            messagebox.showerror("Affine error", f"Affine a={a} is not coprime with 26.")
+            return
+        try:
+            res = combined_decrypt(text, a, b, vkey, keep_nonletters=self.keep_nonletters.get())
         except Exception as e:
             messagebox.showerror("Decryption Error", str(e))
             return
@@ -153,13 +179,15 @@ class MainApp(tk.Tk):
         self.result_text.delete(1.0, tk.END)
 
     # ---- Tab 2 handlers ----
-    def run_freq_analysis(self):
+    def run_break_combined(self):
         cipher = self.atk_cipher_text.get(1.0, tk.END).strip()
         if not cipher:
             messagebox.showinfo("Input required", "Please paste ciphertext into the field above.")
             return
-        res = attack_tools.frequency_analysis(cipher)
         self.atk_output.delete(1.0, tk.END)
+        self.atk_output.insert(tk.END, "Running break-by-frequency (this may take a few seconds)...\n")
+        self.update_idletasks()
+        res = attack_tools.break_combined_frequency(cipher, max_vig_keylen=12)
         self.atk_output.insert(tk.END, res)
 
     def run_known_plain(self):
@@ -168,28 +196,34 @@ class MainApp(tk.Tk):
         if not cipher or not known:
             messagebox.showinfo("Input required", "Provide both ciphertext and known plaintext fragment.")
             return
-        res = attack_tools.known_plaintext_attack(cipher, known)
         self.atk_output.delete(1.0, tk.END)
+        self.atk_output.insert(tk.END, "Running known-plaintext attack (unknown offset)...\n")
+        self.update_idletasks()
+        res = attack_tools.known_plaintext_attack(known, cipher, vkey_length=10)
         self.atk_output.insert(tk.END, res)
 
-    def run_break_combined(self):
-        cipher = self.atk_cipher_text.get(1.0, tk.END).strip()
-        if not cipher:
-            messagebox.showinfo("Input required", "Please paste ciphertext into the field above.")
-            return
-        res = attack_tools.break_combined_frequency(cipher, max_vig_keylen=10, top_candidates=5)
+    def run_demo(self):
+        # run the demo logic: random key and random known fragment offset
         self.atk_output.delete(1.0, tk.END)
-        self.atk_output.insert(tk.END, res)
-
-    # ---- Tab 3 handlers ----
-    def run_eff_tests(self):
-        key = self.eff_key_var.get()
-        if not self.validate_key(key):
-            return
-        res = efficiency_analysis.run_efficiency_tests(key, sizes=(500, 2000, 5000))
-        self.eff_output.delete(1.0, tk.END)
-        self.eff_output.insert(tk.END, res)
+        text_len = 250; vkey_len = 10; known_len = 30
+        plain = clean_text((SAMPLE + " ") * ((text_len // len(SAMPLE)) + 3))[:text_len]
+        vkey = ''.join(random.choice(ALPH) for _ in range(vkey_len))
+        a = random.choice([x for x in range(1,26) if math.gcd(x,26)==1])
+        b = random.randrange(26)
+        ct = combined_encrypt(plain, a, b, vkey)
+        dec = combined_decrypt(ct, a, b, vkey)
+        self.atk_output.insert(tk.END, f"=== Demo parameters ===\nPlaintext len: {len(plain)}\na={a}, b={b}, vkey={vkey}\nDecrypted ok? {dec==plain}\n\n")
+        self.atk_output.insert(tk.END, "--- Frequency-based attack (demo method) ---\n")
+        res = attack_tools.break_combined_frequency(ct, max_vig_keylen=12)
+        self.atk_output.insert(tk.END, res + "\n\n")
+        # known-plaintext: pick random offset and try known-plaintext attack
+        known_start = random.randint(0, len(plain)-known_len)
+        known_fragment = plain[known_start:known_start+known_len]
+        self.atk_output.insert(tk.END, f"--- Known-plaintext attack (fragment length {known_len}) ---\nPicked fragment at unknown offset (hidden to attacker)\n")
+        res2 = attack_tools.known_plaintext_attack(known_fragment, ct, vkey_length=vkey_len)
+        self.atk_output.insert(tk.END, res2 + "\n")
 
 if __name__ == "__main__":
+    import math
     app = MainApp()
     app.mainloop()
