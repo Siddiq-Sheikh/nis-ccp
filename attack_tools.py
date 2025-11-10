@@ -45,27 +45,27 @@ def chi_squared_score(text):
         score += (o - expected)**2 / (expected + 1e-9)
     return score
 
-def break_combined_frequency(ciphertext, max_vig_keylen=20,
-                             try_b=False, auto_try_b_if_letters_le=150, top_k=6):
-    """
-    Two-stage attack:
-      - Stage1 (fast): demo-style search (no b) over IC top lengths and all a.
-      - Stage2 (refine): if try_b True OR ciphertext letters <= auto_try_b_if_letters_le,
-        brute-force b only for the top_k Stage1 candidates (by score).
-
-    Returns guessed a, (optional b), L and recovered plaintext prefix.
+def break_combined_frequency(ciphertext, max_vig_keylen=20):
+    """ Match demo attack_via_ic_and_freq exactly: 
+    - use guess_key_length_ic to get IC results
+    - take top 3 candidate lengths
+    - for each L and each a in A_COPRIME, find best s_list per column by chi-sq
+    - DO NOT brute-force b; s represents (b + k_i) as in the demo
     """
     ct = clean_text(ciphertext)
     if not ct:
         return "No ciphertext (letters) to attack."
 
-    # IC-based candidate lengths (top 3)
-    _, ic_results = guess_key_length_ic(ct, max_len=max_vig_keylen)
+    # get IC-based candidates
+    guessed_L, ic_results = guess_key_length_ic(ct, max_len=max_vig_keylen)
+
+    # take top 3 candidate lengths (or fewer if not available)
     sorted_by_ic = sorted(ic_results, key=lambda x: x[1], reverse=True)
     candidate_lengths = [l for l,_ in sorted_by_ic[:3]]
 
-    # STAGE 1: demo-style (no b) scan to collect top candidates
-    stage1_candidates = []  # list of dicts: {'a':a, 'L':L, 's_list':s_list, 'score':total_score}
+    best_overall = None
+    best_score = float('inf')
+
     for L in candidate_lengths:
         for a in A_COPRIME:
             a_inv = modinv(a, 26)
@@ -76,6 +76,7 @@ def break_combined_frequency(ciphertext, max_vig_keylen=20,
                 best_s = None
                 best_s_score = float('inf')
                 for s in range(26):
+                    # decrypt column with candidate (a,s); s == b + k_i (demo semantics)
                     dec = []
                     for ch in sub:
                         y = ALPH_IDX[ch]
@@ -87,77 +88,30 @@ def break_combined_frequency(ciphertext, max_vig_keylen=20,
                         best_s = s
                 s_list.append(best_s)
                 total_score += best_s_score
-            stage1_candidates.append({'a': a, 'L': L, 's_list': s_list, 'score': total_score})
 
-    if not stage1_candidates:
-        return "Attack failed (no stage1 candidates)."
-
-    # sort stage1 candidates by score (ascending)
-    stage1_candidates.sort(key=lambda c: c['score'])
-
-    # decide whether to refine with b:
-    do_refine = try_b or (len(ct) <= auto_try_b_if_letters_le)
-
-    # If no refine requested, pick best stage1 and return
-    if not do_refine:
-        best = stage1_candidates[0]
-        a_best = best['a']; L_best = best['L']; s_best = best['s_list']
-        a_inv = modinv(a_best, 26)
-        dec = []
-        for i,ch in enumerate(ct):
-            y = ALPH_IDX[ch]; s = s_best[i % L_best]
-            x = (a_inv * ((y - s) % 26)) % 26
-            dec.append(IDX_ALPH[x])
-        plain_guess = ''.join(dec)
-        return (f"Guessed a={a_best}, L={L_best}\n"
-                f"Recovered plaintext (first 300 chars):\n{plain_guess[:300]}")
-
-    # STAGE 2: refine with b but only for top_k stage1 candidates (keeps runtime bounded)
-    top_k = min(top_k, len(stage1_candidates))
-    best_overall = None
-    best_score = float('inf')
-
-    for cand in stage1_candidates[:top_k]:
-        a = cand['a']; L = cand['L']
-        a_inv = modinv(a, 26)
-        # brute-force b for this candidate
-        for b in range(26):
-            s_list = []
-            total_score = 0.0
-            for j in range(L):
-                sub = ct[j::L]
-                best_s = None
-                best_s_score = float('inf')
-                for s in range(26):
-                    dec = []
-                    for ch in sub:
-                        y = ALPH_IDX[ch]
-                        x = (a_inv * ((y - b - s) % 26)) % 26
-                        dec.append(IDX_ALPH[x])
-                    sc = chi_squared_score(''.join(dec))
-                    if sc < best_s_score:
-                        best_s_score = sc
-                        best_s = s
-                s_list.append(best_s)
-                total_score += best_s_score
             if total_score < best_score:
                 best_score = total_score
-                best_overall = {'a': a, 'b': b, 'L': L, 's_list': s_list, 'score': total_score}
+                best_overall = {'a': a, 'L': L, 's_list': s_list, 'score': total_score}
 
     if best_overall is None:
-        return "Refinement failed."
+        return "Attack failed."
 
-    a_best = best_overall['a']; b_best = best_overall['b']; L_best = best_overall['L']; s_best = best_overall['s_list']
+    a_best = best_overall['a']
+    L_best = best_overall['L']
+    s_best = best_overall['s_list']
     a_inv = modinv(a_best, 26)
-    dec = []
-    for i,ch in enumerate(ct):
-        y = ALPH_IDX[ch]; s = s_best[i % L_best]
-        x = (a_inv * ((y - b_best - s) % 26)) % 26
-        dec.append(IDX_ALPH[x])
-    plain_guess = ''.join(dec)
-    return (f"Guessed a={a_best}, b={b_best}, L={L_best}\n"
-            f"Recovered plaintext (first 300 chars):\n{plain_guess[:300]}")
 
+    dec = []
+    for i, ch in enumerate(ct):
+        y = ALPH_IDX[ch]
+        s = s_best[i % L_best]
+        x = (a_inv * ((y - s) % 26)) % 26
+        dec.append(IDX_ALPH[x])
+
+    plain_guess = ''.join(dec)
+
+    return (f"Guessed a={a_best}, L={L_best}\n"
+            f"Recovered plaintext (first 300 chars):\n{plain_guess[:300]}")
 
 
 def known_plaintext_attack(known_fragment, ciphertext, vkey_length=None,
@@ -289,3 +243,16 @@ def known_plaintext_attack(known_fragment, ciphertext, vkey_length=None,
         out.append(f"s_list: {c['s_list']}")
         out.append(f"Plaintext (first 400 chars):\n{c['plaintext'][:400]}\n")
     return '\n'.join(out)
+
+
+
+# cipher = ("TVKISMWVOKHLKPTGOULIEJIGWUKGSIXPQMNEXEXIPAVPIJRBRZTNLCEZEVQJLWGOQOBJEYAFT"
+#           "VTQMVTHKPHYZUFQYSNPQESBOOHQHICFPPRONIGVKSWJYMQAZIKISPUNXITYXLP")
+
+# # call with defaults (auto-refine b for short texts)
+# # res = break_combined_frequency(cipher,debug=True)
+# # print(res)
+
+# # or force refinement and tweak params:
+# res2 = break_combined_frequency(cipher)
+# print(res2)
