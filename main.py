@@ -10,6 +10,8 @@ SAMPLE = ("THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG MANY TIMES AS IT RUNS ACR
 "SCENE THE CHILDREN CLAP AND LAUGH WHILE BIRDS CALL FROM THE TREES THE SKY IS CLEAR AND THE "
 "AIR SMELLS OF CUT GRASS AND WARM EARTH")
 
+max_vkey = 10
+
 class MainApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -43,7 +45,7 @@ class MainApp(tk.Tk):
         key_row = ttk.Frame(top)
         key_row.pack(fill=tk.X, pady=(6,0))
         ttk.Label(key_row, text="Vigenere key (min 1 char):").pack(side=tk.LEFT)
-        self.vkey_var = tk.StringVar(value="XALRQAHNTNWP")
+        self.vkey_var = tk.StringVar(value="SAMPLEKEYX")
         ttk.Entry(key_row, textvariable=self.vkey_var, width=36).pack(side=tk.LEFT, padx=6)
 
         ttk.Label(key_row, text="Affine a:").pack(side=tk.LEFT, padx=(10,0))
@@ -54,8 +56,8 @@ class MainApp(tk.Tk):
         self.b_var = tk.StringVar(value="8")
         ttk.Entry(key_row, textvariable=self.b_var, width=4).pack(side=tk.LEFT, padx=4)
 
-        self.keep_nonletters = tk.BooleanVar(value=False)
-        ttk.Checkbutton(key_row, text="Keep non-letters", variable=self.keep_nonletters).pack(side=tk.LEFT, padx=8)
+        # self.keep_nonletters = tk.BooleanVar(value=False)
+        # ttk.Checkbutton(key_row, text="Keep non-letters", variable=self.keep_nonletters).pack(side=tk.LEFT, padx=8)
 
         btn_row = ttk.Frame(top)
         btn_row.pack(fill=tk.X, pady=8)
@@ -71,7 +73,7 @@ class MainApp(tk.Tk):
 
         # --- Tab 2: Attack / Demo ---
         tab2 = ttk.Frame(nb)
-        nb.add(tab2, text="Attack / Demo")
+        nb.add(tab2, text="Attack")
 
         atk_frame = ttk.Frame(tab2, padding=6)
         atk_frame.pack(fill=tk.BOTH, expand=True)
@@ -82,7 +84,7 @@ class MainApp(tk.Tk):
 
         atk_opts = ttk.Frame(atk_frame)
         atk_opts.pack(fill=tk.X, pady=6)
-        ttk.Button(atk_opts, text="Break by Frequency (demo method)", command=self.run_break_combined).pack(side=tk.LEFT, padx=6)
+        ttk.Button(atk_opts, text="Break by Frequency", command=self.run_break_combined).pack(side=tk.LEFT, padx=6)
         ttk.Button(atk_opts, text="Run Demo (random keys)", command=self.run_demo).pack(side=tk.LEFT, padx=6)
 
         # Known plaintext inputs
@@ -92,7 +94,7 @@ class MainApp(tk.Tk):
         self.known_plain_entry = ttk.Entry(kp_frame, width=60)
         self.known_plain_entry.pack(anchor=tk.W, pady=(2,0))
 
-        ttk.Button(kp_frame, text="Known-Plaintext Attack (demo method)", command=self.run_known_plain).pack(anchor=tk.W, pady=6)
+        ttk.Button(kp_frame, text="Known-Plaintext Attack", command=self.run_known_plain).pack(anchor=tk.W, pady=6)
 
         ttk.Label(atk_frame, text="Attack Output:").pack(anchor=tk.W, pady=(8,0))
         self.atk_output = tk.Text(atk_frame, height=14, wrap=tk.WORD)
@@ -105,9 +107,22 @@ class MainApp(tk.Tk):
         self.char_count_var.set(f"Chars (no spaces): {count}")
 
     # ---- Tab 1 handlers ----
+    # def validate_vkey(self, key):
+    #     if len(key) < 1:
+    #         messagebox.showerror("Key Error", "Vigenere key must be at least 1 character long.")
+    #         return False
+    #     # ensure uppercase A-Z
+    #     if any(ch not in ALPH for ch in key.upper()):
+    #         messagebox.showerror("Key Error", "Vigenere key must contain only letters A-Z.")
+    #         return False
+    #     return True
     def validate_vkey(self, key):
         if len(key) < 1:
             messagebox.showerror("Key Error", "Vigenere key must be at least 1 character long.")
+            return False
+        # Add this line to check maximum key length
+        if len(key) > max_vkey:
+            messagebox.showerror("Key Error", "Vigenere key must be at most 10 characters long.")
             return False
         # ensure uppercase A-Z
         if any(ch not in ALPH for ch in key.upper()):
@@ -139,7 +154,7 @@ class MainApp(tk.Tk):
             messagebox.showerror("Affine error", f"Affine a={a} is not coprime with 26.")
             return
         try:
-            res = combined_encrypt(text, a, b, vkey, keep_nonletters=self.keep_nonletters.get())
+            res = combined_encrypt(text, a, b, vkey, keep_nonletters=False)
         except Exception as e:
             messagebox.showerror("Encryption Error", str(e))
             return
@@ -201,7 +216,7 @@ class MainApp(tk.Tk):
         self.atk_output.delete(1.0, tk.END)
         self.atk_output.insert(tk.END, "Running break-by-frequency (this may take a few seconds)...\n")
         self.update_idletasks()
-        res = attack_tools.break_combined_frequency(cipher, max_vig_keylen=12)
+        res = attack_tools.break_combined_frequency(cipher, max_vig_keylen=max_vkey)
         self.atk_output.insert(tk.END, res)
 
     def run_known_plain(self):
@@ -213,7 +228,7 @@ class MainApp(tk.Tk):
         self.atk_output.delete(1.0, tk.END)
         self.atk_output.insert(tk.END, "Running known-plaintext attack (unknown offset)...\n")
         self.update_idletasks()
-        res = attack_tools.known_plaintext_attack(known, cipher)
+        res = attack_tools.known_plaintext_attack(known, cipher, max_vig_keylen=max_vkey)
         self.atk_output.insert(tk.END, res)
 
     def run_demo(self):
@@ -228,7 +243,7 @@ class MainApp(tk.Tk):
         dec = combined_decrypt(ct, a, b, vkey)
         self.atk_output.insert(tk.END, f"=== Demo parameters ===\nPlaintext len: {len(plain)}\na={a}, b={b}, vkey={vkey}\nDecrypted ok? {dec==plain}\n\n")
         self.atk_output.insert(tk.END, "--- Frequency-based attack (demo method) ---\n")
-        res = attack_tools.break_combined_frequency(ct, max_vig_keylen=12)
+        res = attack_tools.break_combined_frequency(ct, max_vig_keylen=max_vkey)
         self.atk_output.insert(tk.END, res + "\n\n")
         # known-plaintext: pick random offset and try known-plaintext attack
         known_start = random.randint(0, len(plain)-known_len)
