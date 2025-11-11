@@ -1,4 +1,4 @@
-Combined Cipher (Vigenere + Affine) — GUI & Tools
+Combined Cipher (Affine + Vigenere) — GUI & Tools
 
 Files:
 - main.py               -> Launches the GUI (Encrypt/Decrypt, Attack, Efficiency)
@@ -38,3 +38,4 @@ If you want me to:
 - Save attack results to a file,
 - Support loading/saving ciphertext and logs,
 tell me which features and I'll update the code.
+
